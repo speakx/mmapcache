@@ -6,6 +6,8 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,14 +21,17 @@ type PoolMMapCache struct {
 	dir            string
 	template       []byte
 	dataSize       int
+	pool           *list.List
 	recycleDur     time.Duration
 	allocator      chan *MMapCache
 	collector      chan *MMapCache
 	errorfuc       func(error)
 	loadFlag       bool
+	closedFlag     bool
 	allocCounter   uint64
 	collectCounter uint64
 	releaseCounter uint64
+	wait           sync.WaitGroup
 }
 
 // InitMMapCachePool 初始化mmap的cache池
@@ -40,6 +45,7 @@ func InitMMapCachePool(
 		dir:        dir,
 		template:   createMMapTemplate(cachesize),
 		dataSize:   datasize,
+		pool:       list.New(),
 		recycleDur: time.Second,
 		allocator:  make(chan *MMapCache),
 		collector:  make(chan *MMapCache),
@@ -49,6 +55,7 @@ func InitMMapCachePool(
 
 	reload := DefPoolMMapCache.reloadCache()
 	reloadfunc(reload)
+	DefPoolMMapCache.wait.Add(1)
 	DefPoolMMapCache.mmapAllocLoop(prealloccount)
 	for {
 		if DefPoolMMapCache.loadFlag == false {
@@ -82,24 +89,61 @@ func createMMapFile(file string, template []byte) error {
 	return ioutil.WriteFile(file, template, 0666)
 }
 
-func makeMMapCacheID(seqid uint64) uint64 {
-	return uint64(time.Now().Unix())<<32 | seqid
+func (m *PoolMMapCache) makeCacheFileName() string {
+	fileName := fmt.Sprintf("%v_%v", uint32(time.Now().Unix()), m.allocCounter)
+	m.allocCounter++
+	return path.Join(m.dir, fmt.Sprintf("%v.cachedat", fileName))
+}
+
+func (m *PoolMMapCache) close() {
+	m.closedFlag = true
+	m.wait.Wait()
 }
 
 func (m *PoolMMapCache) reloadCache() []*MMapCache {
-	for index := 0; ; index++ {
-		filePath := path.Join(m.dir, fmt.Sprintf("%v.dat", index))
-		_, err := os.Stat(filePath)
-		if nil != err {
-			break
-		}
-		os.Remove(filePath)
+	fis, err := ioutil.ReadDir(m.dir)
+	if err != nil {
+		return nil
 	}
-	return nil
+
+	reloadMMapCaches := make([]*MMapCache, 0, 10)
+	for _, fi := range fis {
+		if fi.IsDir() {
+			continue
+		}
+
+		ok := strings.HasSuffix(fi.Name(), ".cachedat")
+		if ok {
+			filePath := path.Join(m.dir, fi.Name())
+
+			mmapCache, err := newMMapCache(filePath, m.dataSize, true)
+			// 数据没发加载，移动为.err文件，待分析
+			if nil != err {
+				os.Rename(filePath, fmt.Sprintf("%v.err", filePath))
+				continue
+			}
+
+			// 有数据，加入到reload队列抛给业务层自行处理
+			if mmapCache.getWritePos() > 0 {
+				reloadMMapCaches = append(reloadMMapCaches, mmapCache)
+				continue
+			}
+
+			// 没有数据，判断一下文件大小是否一样，不一样就删了
+			if int(fi.Size()) != m.dataSize {
+				mmapCache.close(true)
+				continue
+			}
+
+			// 啥问题都没，加到缓存池里
+			m.pool.PushBack(mmapCache)
+		}
+	}
+	return reloadMMapCaches
 }
 
-func (m *PoolMMapCache) preAllocMMapCache(fileid uint64) *MMapCache {
-	filePath := path.Join(m.dir, fmt.Sprintf("%v.dat", fileid))
+func (m *PoolMMapCache) preAllocMMapCache() *MMapCache {
+	filePath := m.makeCacheFileName()
 
 	createFlag := false
 	fi, _ := os.Stat(filePath)
@@ -120,7 +164,7 @@ func (m *PoolMMapCache) preAllocMMapCache(fileid uint64) *MMapCache {
 		}
 	}
 
-	mmapCache, err := newMMapCache(filePath, m.dataSize)
+	mmapCache, err := newMMapCache(filePath, m.dataSize, false)
 	if nil != err {
 		m.errorfuc(err)
 		os.Exit(0)
@@ -130,43 +174,49 @@ func (m *PoolMMapCache) preAllocMMapCache(fileid uint64) *MMapCache {
 
 func (m *PoolMMapCache) mmapAllocLoop(cnt int) {
 	go func() {
-		mmapIDSeq := uint64(0)
-		q := list.New()
-		for index := 0; index < cnt; index++ {
-			q.PushBack(m.preAllocMMapCache(m.allocCounter))
-			m.allocCounter++
+		for i := 0; i < cnt; i++ {
+			m.pool.PushBack(m.preAllocMMapCache())
 		}
 		m.loadFlag = true
 
 		for {
-			if q.Len() == 0 {
-				q.PushBack(m.preAllocMMapCache(m.allocCounter))
-				m.allocCounter++
+			if m.closedFlag {
+				for {
+					if m.pool.Len() == 0 {
+						break
+					}
+					e := m.pool.Front()
+					e.Value.(*MMapCache).close(false)
+					m.pool.Remove(e)
+				}
+				break
 			}
-			e := q.Back()
 
-			e.Value.(*MMapCache).name(makeMMapCacheID(mmapIDSeq))
-			mmapIDSeq++
+			if m.pool.Len() == 0 {
+				m.pool.PushBack(m.preAllocMMapCache())
+			}
+			e := m.pool.Front()
 
 			select {
 			case b := <-m.collector:
-				if q.Len() < cnt {
+				if m.pool.Len() < cnt {
 					b.recycle(m.template)
-					q.PushBack(b)
+					m.pool.PushBack(b)
 					m.collectCounter++
 				}
 			case m.allocator <- e.Value.(*MMapCache):
-				q.Remove(e)
+				m.pool.Remove(e)
 			case <-time.After(m.recycleDur):
-				if q.Len() > cnt {
-					e := q.Back()
+				if m.pool.Len() > cnt {
+					e := m.pool.Back()
 					e.Value.(*MMapCache).close(true)
-					q.Remove(e)
+					m.pool.Remove(e)
 					m.releaseCounter++
 				} else {
 					break
 				}
 			}
 		}
+		m.wait.Done()
 	}()
 }

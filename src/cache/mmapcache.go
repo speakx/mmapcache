@@ -11,16 +11,14 @@ import (
 
 const (
 	mmapCacheHeadSize        = 1024
-	mmapCacheHeadIDPos       = 4
-	mmapCacheHeadNextIDPos   = mmapCacheHeadIDPos + 8
-	mmapCacheHeadVersionPos  = mmapCacheHeadNextIDPos + 8
-	mmapCacheHeadDataSizePos = mmapCacheHeadVersionPos + 8
+	mmapCacheHeadVersionPos  = 4
+	mmapCacheHeadDataSizePos = mmapCacheHeadVersionPos + 2
 	mmapCacheContentPos      = mmapCacheHeadSize
 )
 
 // MMapCache 基于mmap模式的文件缓存
-// | ------------------- head ----------------------------------------------------| --- content ---|
-// | 4byte:content.len | 8byte:id | 8byte:nextid | 2byte:version | 4byte:datasize |   mmapdata.go  |
+// | ---------------------- head -----------------------| --- content ---|
+// | 4byte:content.len | 2byte:version | 4byte:datasize |   mmapdata.go  |
 type MMapCache struct {
 	path             string
 	f                *os.File
@@ -30,12 +28,11 @@ type MMapCache struct {
 	dataSize         int    // 每次data的固定分配长度，可以支持快速写，但是弊端就是需要提前设计好将要写入的数据最大长度，否则会有数据写失败
 	readPos          int
 	writePos         int
-	nextMMapCache    *MMapCache
 	mmapdataIdx      map[string]*MMapData
 	mmapdataAry      []*MMapData
 }
 
-func newMMapCache(filePath string, dataSize int) (*MMapCache, error) {
+func newMMapCache(filePath string, dataSize int, reload bool) (*MMapCache, error) {
 	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0)
 	if nil != err {
 		return nil, err
@@ -54,47 +51,29 @@ func newMMapCache(filePath string, dataSize int) (*MMapCache, error) {
 		dataSize:         dataSize,
 	}
 
-	mmcache.init(true)
+	mmcache.init(reload)
 	return mmcache, nil
-}
-
-// GetID 获取当前mmap对象的ID
-func (m *MMapCache) GetID() uint64 {
-	return byteio.BytesToUint64(m.getIDBuf())
-}
-
-// GetNextID 当多片mmap合并到一起使用时获取到下一片的mmap对象
-func (m *MMapCache) GetNextID() uint64 {
-	return byteio.BytesToUint64(m.getNextIDBuf())
-}
-
-// MergeMMapCache 将另一片mmap与当前mmap合并到一起产生一个新的大块mmap对象
-func (m *MMapCache) MergeMMapCache(mmapCache *MMapCache) *MMapCache {
-	mmapCache.setNext(m)
-	return mmapCache
 }
 
 // Release 释放，将此mmap文件丢到pool中，由pool的策略决定释放真正释放
 func (m *MMapCache) Release() {
-	mmapCache := m
-	for {
-		next := mmapCache.nextMMapCache
-		DefPoolMMapCache.Collect(mmapCache)
-
-		if nil == next {
-			break
-		}
-	}
+	DefPoolMMapCache.Collect(m)
 }
 
-// Write 写入一片内存对象
+// GetMMapDatas 获取当前Cache文件中存储的所有mmapdata对象
+// 当通过Reload加载完毕MMapCache文件后，调用此方法获取到所有文件内的对象数据，然后通过反序列化初始化出内存对象
+// for _, mmapdata := range GetMMapDatas() {
+//     val := ...Unmarshal(mmapdata.GetData())
+//     mmapdata.ReloadVal(val)
+// }
+func (m *MMapCache) GetMMapDatas() []*MMapData {
+	return m.mmapdataAry
+}
+
+// WriteData 写入一片内存对象
 // 返回 -1 表示当前mmap对象已无可用空间
 // 返回 error，表示当前的待写入对象，超出了mmap对象的datasize
-func (m *MMapCache) Write(tag uint16, data, key []byte, val interface{}) (int, error) {
-	if len(data)+mmapDataHeadLen > m.dataSize {
-		return 0, errors.New("mmap cache data.size over follow")
-	}
-
+func (m *MMapCache) WriteData(tag uint16, data, key []byte, val interface{}) (int, error) {
 	// 判断是否已经有这个缓存了
 	mmapData, _ := m.mmapdataIdx[string(key)]
 	if nil == mmapData {
@@ -103,7 +82,11 @@ func (m *MMapCache) Write(tag uint16, data, key []byte, val interface{}) (int, e
 		}
 
 		writeBuf := m.writeContent[m.writePos:]
-		mmapData = newMMapData(uint32(m.dataSize), tag, writeBuf, val)
+		mmapData = newMMapData(uint32(m.dataSize), tag, writeBuf, key, data, val)
+		if nil == mmapData {
+			return 0, errors.New("mmap cache data.size over follow")
+		}
+
 		m.mmapdataIdx[string(key)] = mmapData
 		m.mmapdataAry = append(m.mmapdataAry, mmapData)
 		m.setWritePos(m.writePos + m.dataSize)
@@ -113,44 +96,14 @@ func (m *MMapCache) Write(tag uint16, data, key []byte, val interface{}) (int, e
 	return len(data), nil
 }
 
-// Read 按照写入的顺序，顺序读出byte数据块
-// 如果p为nil，则返回当前读取一次，需要的byte.len
-// 如果p为nil，且返回的n也为0，则表示没有可读取数据
-func (m *MMapCache) Read(p []byte) (int, error) {
-	return 0, nil
-}
-
-// GetFreeDataLen 获取剩下的可以write的数据空间
-func (m *MMapCache) GetFreeDataLen() int {
+func (m *MMapCache) getFreeContentLen() int {
 	return len(m.writeContent) - m.writePos
-}
-
-func (m *MMapCache) name(id uint64) {
-	byteio.Uint64ToBytes(id, m.getIDBuf())
 }
 
 func (m *MMapCache) close(remove bool) {
 	m.f.Close()
 	if remove {
 		os.Remove(m.path)
-	}
-}
-
-func (m *MMapCache) getIDBuf() []byte {
-	return m.buf[mmapCacheHeadIDPos:]
-}
-
-func (m *MMapCache) getNextIDBuf() []byte {
-	return m.buf[mmapCacheHeadNextIDPos:]
-}
-
-func (m *MMapCache) setNext(mmapCache *MMapCache) {
-	if nil != mmapCache {
-		byteio.Uint64ToBytes(mmapCache.GetID(), m.getNextIDBuf())
-		m.nextMMapCache = mmapCache
-	} else {
-		byteio.Uint64ToBytes(0, m.getNextIDBuf())
-		m.nextMMapCache = nil
 	}
 }
 
@@ -164,17 +117,23 @@ func (m *MMapCache) getWritePos() int {
 }
 
 func (m *MMapCache) init(reload bool) {
+	m.mmapdataIdx = make(map[string]*MMapData)
+	m.mmapdataAry = make([]*MMapData, 0, (len(m.buf)-mmapCacheHeadSize)/m.dataSize)
 	if reload {
-		// m.dataSize = int(byteio.BytesToUint32(m.buf[mmapCacheHeadDataSizePos:]))
 		m.readPos = 0
 		m.writePos = m.getWritePos()
+
+		reloadBuf := m.writeContent
+		for i := m.writePos; i > 0; {
+			mmapData := reloadMMapData(reloadBuf)
+			i -= int(mmapData.GetSize())
+			m.mmapdataAry = append(m.mmapdataAry, mmapData)
+			reloadBuf = reloadBuf[mmapData.GetSize():]
+		}
 	} else {
 		m.readPos = 0
 		m.setWritePos(0)
-		m.setNext(nil)
 	}
-	m.mmapdataIdx = make(map[string]*MMapData)
-	m.mmapdataAry = make([]*MMapData, 0, (len(m.buf)-mmapCacheHeadSize)/m.dataSize)
 }
 
 func (m *MMapCache) recycle(template []byte) {

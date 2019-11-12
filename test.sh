@@ -37,5 +37,6 @@ if [ "$target" == "all" ] || [ "$target" == "mmap" ] ;then
     go get github.com/edsrzf/mmap-go
     cd ./src
     go test -v ./cache/mmapcache_test.go ./cache/mmapcachepool.go ./cache/mmapcache.go ./cache/mmapdata.go
-    # go test -bench=".*" ./cache/mmapcache_test.go ./cache/mmapcachepool.go ./cache/mmapcache.go ./cache/mmapdata.go
+    go test -bench=".*" ./cache/mmapcache_test.go ./cache/mmapcachepool.go ./cache/mmapcache.go ./cache/mmapdata.go
+    go test -v ./cache/mmapcachepool_test.go ./cache/mmapcachepool.go ./cache/mmapcache.go ./cache/mmapdata.go
 fi

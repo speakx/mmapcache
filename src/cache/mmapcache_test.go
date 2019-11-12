@@ -11,7 +11,8 @@ import (
 
 var pwd string
 var template []byte
-var cachesize = 1024 * 1024 * 10
+var cachesize = 1024 * 1024 * 1
+var datasize = 1024 * 8
 
 func TestCreateMMapCache(t *testing.T) {
 	pwd, _ = filepath.Abs(filepath.Dir(os.Args[0]))
@@ -27,7 +28,7 @@ func TestCreateMMapCache(t *testing.T) {
 	}
 	t.Logf("createMMapFile is ok %v", cachefile)
 
-	mmapCache, err := newMMapCache(cachefile, 1024)
+	mmapCache, err := newMMapCache(cachefile, datasize, false)
 	if nil != err {
 		t.Errorf("newMMapCache failed err:%v", err)
 		return
@@ -47,68 +48,26 @@ func TestCreateMMapCache(t *testing.T) {
 	t.Logf("mmapcache.close is ok err:%v", err)
 }
 
-func TestMMapCache(t *testing.T) {
+func TestMMapCacheRecyle(t *testing.T) {
 	cachefile := fmt.Sprintf("%v/0.dat", pwd)
 	t.Logf("cachefile:%v", cachefile)
 
 	createMMapFile(cachefile, template)
-	mmapCache, _ := newMMapCache(cachefile, 1024)
+	mmapCache, _ := newMMapCache(cachefile, datasize, false)
 	defer mmapCache.close(true)
 
-	id := makeMMapCacheID(0x1)
-	mmapCache.name(id)
-	t.Logf("mmapcache.id:%x", id)
-	if mmapCache.GetID() != id {
-		t.Errorf("mmapcache.name failed")
-		return
-	}
-	t.Logf("mmapcache.name is ok")
-
-	// merge
-	cachefile2 := fmt.Sprintf("%v/1.dat", pwd)
-	createMMapFile(cachefile2, template)
-	mmapCache2, _ := newMMapCache(cachefile2, 1024)
-	defer mmapCache2.close(true)
-
-	id2 := makeMMapCacheID(0x2)
-	mmapCache2.name(id2)
-	t.Logf("mmapcache2.id:%x", id2)
-	mmapCacheMerge := mmapCache.MergeMMapCache(mmapCache2)
-	if mmapCacheMerge != mmapCache2 {
-		t.Errorf("mmapcache.merge failed. 1:%p 2:%p -> %p", mmapCache, mmapCache2, mmapCacheMerge)
-		return
-	}
-	if mmapCacheMerge.nextMMapCache != mmapCache {
-		t.Errorf("mmapcache.merge failed. next:%p  != %p", mmapCacheMerge.nextMMapCache, mmapCache)
-		return
-	}
-	if mmapCacheMerge.GetNextID() != mmapCache.GetID() {
-		t.Errorf("mmapcache.merge failed. next.id:%v  != %v", mmapCacheMerge.GetNextID(), mmapCache.GetID())
-		return
-	}
-	t.Logf("mmapcache.merge 1:%p 2:%p -> %p", mmapCache, mmapCache2, mmapCacheMerge)
-	t.Logf("mmapcache.merge id:%x nextid:%x", mmapCacheMerge.GetID(), mmapCacheMerge.GetNextID())
-
 	// recyle
-	mmapCacheMerge.recycle(template)
-	if mmapCacheMerge.getWritePos() != 0 {
-		t.Errorf("mmapcache.recycle writepos:%v err", mmapCacheMerge.getWritePos())
+	mmapCache.recycle(template)
+	if mmapCache.getWritePos() != 0 {
+		t.Errorf("mmapcache.recycle buf.writepos:%v err", mmapCache.getWritePos())
 		return
 	}
-	if mmapCacheMerge.readPos != 0 {
-		t.Errorf("mmapcache.recycle readpos:%v err", mmapCacheMerge.readPos)
+	if mmapCache.writePos != 0 {
+		t.Errorf("mmapcache.recycle writepos:%v err", mmapCache.writePos)
 		return
 	}
-	if mmapCacheMerge.readPos != 0 {
-		t.Errorf("mmapcache.recycle readpos:%v err", mmapCacheMerge.readPos)
-		return
-	}
-	if mmapCacheMerge.nextMMapCache != nil {
-		t.Errorf("mmapcache.recycle next:%v err", mmapCacheMerge.nextMMapCache)
-		return
-	}
-	if mmapCacheMerge.GetNextID() != 0 {
-		t.Errorf("mmapcache.recycle nextid:%v err", mmapCacheMerge.GetNextID())
+	if mmapCache.readPos != 0 {
+		t.Errorf("mmapcache.recycle readpos:%v err", mmapCache.readPos)
 		return
 	}
 	t.Logf("mmapcache.recyle is ok")
@@ -119,7 +78,7 @@ func TestMMapCacheWrite(t *testing.T) {
 	t.Logf("cachefile:%v", cachefile)
 
 	createMMapFile(cachefile, template)
-	mmapCache, _ := newMMapCache(cachefile, 1024)
+	mmapCache, _ := newMMapCache(cachefile, datasize, false)
 	defer mmapCache.close(true)
 
 	writeKey := "HelloMMap"
@@ -127,7 +86,7 @@ func TestMMapCacheWrite(t *testing.T) {
 	t.Logf("mmapcache.write key:%v buf:%v", writeKey, writeBuf)
 
 	// write.check
-	n, err := mmapCache.Write(0x1, make([]byte, 1024*2), []byte(writeKey), nil)
+	n, err := mmapCache.WriteData(0x1, make([]byte, datasize*2), []byte(writeKey), nil)
 	if 0 != n || nil == err {
 		t.Errorf("mmapcache.write check err. n:%v err:%v", n, err)
 		return
@@ -135,9 +94,9 @@ func TestMMapCacheWrite(t *testing.T) {
 	t.Logf("mmapcache.write check ok")
 
 	// write
-	oldDataLen := mmapCache.GetFreeDataLen()
-	n, _ = mmapCache.Write(0xabcd, writeBuf, []byte(writeKey), nil)
-	newDataLen := mmapCache.GetFreeDataLen()
+	oldDataLen := mmapCache.getFreeContentLen()
+	n, _ = mmapCache.WriteData(0xabcd, writeBuf, []byte(writeKey), nil)
+	newDataLen := mmapCache.getFreeContentLen()
 	if n != len(writeBuf) {
 		t.Errorf("mmapcache.write err. n:%v input:%v", n, writeBuf)
 		return
@@ -156,41 +115,146 @@ func TestMMapCacheWrite(t *testing.T) {
 		t.Errorf("mmapcache.mmapdata idx not found")
 		return
 	}
-	if mmapData.getUsed() != uint32(n) {
-		t.Errorf("mmapcache.mmapdata used:%v != %v", mmapData.getUsed(), n)
+	if mmapData.GetSize() != uint32(datasize) {
+		t.Errorf("mmapcache.mmapdata size:%v != %v", mmapData.GetSize(), datasize)
 		return
 	}
-	if mmapData.getTag() != 0xabcd {
-		t.Errorf("mmapcache.mmapdata tag:%v != %v head:%v", mmapData.getTag(), 0xabcd, mmapData.getHead())
+	if mmapData.getKeyUsed() != uint32(len([]byte(writeKey))) {
+		t.Errorf("mmapcache.mmapdata key.used:%v != %v", mmapData.getKeyUsed(), uint32(len([]byte(writeKey))))
 		return
 	}
-	if false == byteio.BytesCmp(mmapData.getData(), writeBuf) {
-		t.Errorf("mmapcache.mmapdata data:%v != %v", mmapData.getData()[:len(writeBuf)], writeBuf)
+	if mmapData.getDataUsed() != uint32(n) {
+		t.Errorf("mmapcache.mmapdata data.used:%v != %v", mmapData.getDataUsed(), n)
+		return
+	}
+	if mmapData.getUsed() != mmapData.getKeyUsed()+mmapData.getDataUsed() {
+		t.Errorf("mmapcache.mmapdata used:%v != %v", mmapData.getUsed(), mmapData.getKeyUsed()+mmapData.getDataUsed())
+		return
+	}
+	if mmapData.GetTag() != 0xabcd {
+		t.Errorf("mmapcache.mmapdata tag:%v != %v head:%v", mmapData.GetTag(), 0xabcd, mmapData.getHead())
+		return
+	}
+	if false == byteio.BytesCmp(mmapData.GetData(), writeBuf) {
+		t.Errorf("mmapcache.mmapdata data:%v != %v", mmapData.GetData()[:len(writeBuf)], writeBuf)
 		return
 	}
 	t.Logf("mmapcache.mmapdata is ok. used:%v tag:%v data:%v",
-		mmapData.getUsed(), mmapData.getTag(), mmapData.getData())
+		mmapData.getUsed(), mmapData.GetTag(), mmapData.GetData())
 
 	// write.overflow check
 	for i := 0; ; i++ {
 		key := fmt.Sprintf("key-%v", i)
-		n, _ := mmapCache.Write(0x2, writeBuf, []byte(key), nil)
+		n, _ := mmapCache.WriteData(0x2, writeBuf, []byte(key), nil)
 		if -1 == n {
 			break
 		}
 	}
-	if len(mmapCache.mmapdataAry)*mmapCache.dataSize+mmapDataHeadLen > len(mmapCache.buf) {
+	if len(mmapCache.mmapdataAry)*mmapCache.dataSize+mmapCacheHeadSize > len(mmapCache.buf) {
 		t.Errorf("mmapcache.write err. overflow mmapdata.count:%v totaldatasize:%v headsize:%v => %v : %v",
-			len(mmapCache.mmapdataAry), mmapCache.dataSize, mmapDataHeadLen,
-			len(mmapCache.mmapdataAry)*mmapCache.dataSize+mmapDataHeadLen, len(mmapCache.buf))
+			len(mmapCache.mmapdataAry), mmapCache.dataSize, mmapCacheHeadSize,
+			len(mmapCache.mmapdataAry)*mmapCache.dataSize+mmapCacheHeadSize, len(mmapCache.buf))
 	}
-	leftSize := len(mmapCache.buf) - (len(mmapCache.mmapdataAry)*mmapCache.dataSize + mmapDataHeadLen)
+	leftSize := len(mmapCache.buf) - (len(mmapCache.mmapdataAry)*mmapCache.dataSize + mmapCacheHeadSize)
 	if leftSize >= mmapCache.dataSize {
 		t.Errorf("mmapcache.write err. used err. mmapdata.count:%v totaldatasize:%v headsize:%v => %v : %v",
-			len(mmapCache.mmapdataAry), mmapCache.dataSize, mmapDataHeadLen,
-			len(mmapCache.mmapdataAry)*mmapCache.dataSize+mmapDataHeadLen, len(mmapCache.buf))
+			len(mmapCache.mmapdataAry), mmapCache.dataSize, mmapCacheHeadSize,
+			len(mmapCache.mmapdataAry)*mmapCache.dataSize+mmapCacheHeadSize, len(mmapCache.buf))
 	}
-	t.Logf("mmapcache.write overflow ok. mmapdata.count:%v totaldatasize:%v headsize:%v => %v : %v",
-		len(mmapCache.mmapdataAry), mmapCache.dataSize, mmapDataHeadLen,
-		len(mmapCache.mmapdataAry)*mmapCache.dataSize+mmapDataHeadLen, len(mmapCache.buf))
+	t.Logf("mmapcache.write overflow ok. mmapdata.count:%v totaldatasize:%v headsize:%v => %v - %v => %v",
+		len(mmapCache.mmapdataAry), mmapCache.dataSize, mmapCacheHeadSize,
+		len(mmapCache.buf),
+		len(mmapCache.mmapdataAry)*mmapCache.dataSize+mmapCacheHeadSize,
+		leftSize)
+}
+
+func TestMMapCacheReload(t *testing.T) {
+	cachefile := fmt.Sprintf("%v/1.dat", pwd)
+	t.Logf("cachefile:%v", cachefile)
+
+	createMMapFile(cachefile, template)
+	mmapCache, _ := newMMapCache(cachefile, datasize, false)
+
+	writeCount := 50
+	for i := 0; i < writeCount; i++ {
+		key := fmt.Sprintf("key-%v", i)
+		data := fmt.Sprintf("data-%v", i)
+		_, err := mmapCache.WriteData(uint16(i), []byte(data), []byte(key), nil)
+		if nil != err {
+			t.Errorf("mmapcache.wirte err:%v", err)
+			return
+		}
+	}
+	mmapCache.close(false)
+
+	mmapCache, _ = newMMapCache(cachefile, datasize, true)
+	defer mmapCache.close(true)
+	if len(mmapCache.mmapdataAry) != writeCount {
+		t.Errorf("mmapcache.data len:%v != %v", len(mmapCache.mmapdataAry), writeCount)
+		return
+	}
+	t.Logf("mmapcache.data reload ok len:%v = %v", len(mmapCache.mmapdataAry), writeCount)
+
+	for i, mmapdata := range mmapCache.mmapdataAry {
+		key := fmt.Sprintf("key-%v", i)
+		data := fmt.Sprintf("data-%v", i)
+
+		if string(mmapdata.GetKey()) != key {
+			t.Errorf("mmapcache.data reload err idx:%v key:%v != %v", i, string(mmapdata.GetKey()), key)
+			return
+		}
+
+		if string(mmapdata.GetData()) != data {
+			t.Errorf("mmapcache.data reload err idx:%v data:%v != %v", i, string(mmapdata.GetData()), data)
+			return
+		}
+	}
+}
+
+var mmapCacheBench *MMapCache
+var fileBench *os.File
+var fileCounter int
+var key []byte
+var data []byte
+
+func TestMMapCacheBenchPrepare(t *testing.T) {
+	key = make([]byte, 256)
+	data = make([]byte, 4*1024)
+
+	cachefile := fmt.Sprintf("%v/b.dat", pwd)
+	createMMapFile(cachefile, template)
+	mmapCacheBench, _ = newMMapCache(cachefile, datasize, false)
+
+	filePath := fmt.Sprintf("%v/bf.dat", pwd)
+	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if nil != err {
+		t.Errorf("os.OpenFile err:%v", err)
+		return
+	}
+	fileBench = f
+}
+
+func Benchmark_MMapcache_Create(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		cachefile := fmt.Sprintf("%v/%v.dat", pwd, fileCounter)
+		fileCounter++
+		createMMapFile(cachefile, template)
+	}
+}
+
+func Benchmark_MMapcache_Write(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		n, _ := mmapCacheBench.WriteData(0x1, data, key, nil)
+		if -1 == n {
+			mmapCacheBench.recycle(template)
+			mmapCacheBench.WriteData(0x1, data, key, nil)
+		}
+	}
+}
+
+func Benchmark_File_Write(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		fileBench.Write(key)
+		fileBench.Write(data)
+	}
 }
