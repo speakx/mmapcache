@@ -51,13 +51,34 @@ func newMMapCache(filePath string, dataSize int, reload bool) (*MMapCache, error
 		dataSize:         dataSize,
 	}
 
+	byteio.Uint16ToBytes(uint16(0x1), mmcache.buf[mmapCacheHeadVersionPos:])
+	byteio.Uint32ToBytes(uint32(dataSize), mmcache.buf[mmapCacheHeadDataSizePos:])
 	mmcache.init(reload)
 	return mmcache, nil
 }
 
+// ReloadMMapCache 通过内存对象
+// 反序列化出之前的MMapCache对象与MMapCache对象中的MMapData
+func ReloadMMapCache(buf []byte) *MMapCache {
+	mmcache := &MMapCache{
+		buf:          buf,
+		writeContent: buf[mmapCacheContentPos:],
+	}
+
+	mmcache.init(true)
+	return mmcache
+}
+
 // Release 释放，将此mmap文件丢到pool中，由pool的策略决定释放真正释放
 func (m *MMapCache) Release() {
-	DefPoolMMapCache.Collect(m)
+	if nil != m.f {
+		DefPoolMMapCache.Collect(m)
+	}
+}
+
+// Path mmap文件所映射的本地文件对象
+func (m *MMapCache) Path() string {
+	return m.path
 }
 
 // GetMMapDatas 获取当前Cache文件中存储的所有mmapdata对象
@@ -96,6 +117,11 @@ func (m *MMapCache) WriteData(tag uint16, data, key []byte, val interface{}) (in
 	return len(data), nil
 }
 
+// GetWrittenData 返回有数据的mmap内存
+func (m *MMapCache) GetWrittenData() []byte {
+	return m.buf[:mmapCacheHeadSize+m.writePos]
+}
+
 func (m *MMapCache) getFreeContentLen() int {
 	return len(m.writeContent) - m.writePos
 }
@@ -117,11 +143,14 @@ func (m *MMapCache) getWritePos() int {
 }
 
 func (m *MMapCache) init(reload bool) {
-	m.mmapdataIdx = make(map[string]*MMapData)
-	m.mmapdataAry = make([]*MMapData, 0, (len(m.buf)-mmapCacheHeadSize)/m.dataSize)
+
 	if reload {
 		m.readPos = 0
 		m.writePos = m.getWritePos()
+		m.dataSize = int(byteio.BytesToUint32(m.buf[mmapCacheHeadDataSizePos:]))
+
+		m.mmapdataIdx = make(map[string]*MMapData)
+		m.mmapdataAry = make([]*MMapData, 0, (len(m.buf)-mmapCacheHeadSize)/m.dataSize)
 
 		reloadBuf := m.writeContent
 		for i := m.writePos; i > 0; {
@@ -129,10 +158,14 @@ func (m *MMapCache) init(reload bool) {
 			i -= int(mmapData.GetSize())
 			m.mmapdataAry = append(m.mmapdataAry, mmapData)
 			reloadBuf = reloadBuf[mmapData.GetSize():]
+			m.mmapdataIdx[string(mmapData.GetKey())] = mmapData
 		}
 	} else {
 		m.readPos = 0
 		m.setWritePos(0)
+
+		m.mmapdataIdx = make(map[string]*MMapData)
+		m.mmapdataAry = make([]*MMapData, 0, (len(m.buf)-mmapCacheHeadSize)/m.dataSize)
 	}
 }
 

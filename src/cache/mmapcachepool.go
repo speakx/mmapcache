@@ -31,10 +31,25 @@ type PoolMMapCache struct {
 	allocCounter   uint64
 	collectCounter uint64
 	releaseCounter uint64
+	poolSize       int
 	wait           sync.WaitGroup
 }
 
 // InitMMapCachePool 初始化mmap的cache池
+// cachesize 缓存文件的大小
+// datasize 缓存文件中，每条数据的固定大小
+// prealloccount 初始化缓存池时，会预先构建的缓存文件数量
+// errorfunc 当出现异常，会出发此函数异步抛出error
+// reloadfunc 当本地有之前的缓存数据时，通过此函数处理已经缓存到本地的数据
+//            这批数据会初始化为MMapCache对象，但不会被添加到缓存池中（因为其中已经有数据，处于正在使用状态）
+// func(mmapCaches []*MMapCache) {
+// 	for _, mmapCache := range mmapCaches {
+// 		for _,mmapData := range mmapCache.GetMMapDatas() {
+// 			val := 反序列化文件缓存数据(mmapData.GetData())
+// 			mmapData.ReloadVal(val)
+// 		}
+// 	}
+// }
 func InitMMapCachePool(
 	dir string,
 	cachesize int, datasize int, prealloccount int,
@@ -54,7 +69,6 @@ func InitMMapCachePool(
 	}
 
 	reload := DefPoolMMapCache.reloadCache()
-	reloadfunc(reload)
 	DefPoolMMapCache.wait.Add(1)
 	DefPoolMMapCache.mmapAllocLoop(prealloccount)
 	for {
@@ -64,6 +78,8 @@ func InitMMapCachePool(
 			break
 		}
 	}
+
+	reloadfunc(reload)
 	return nil
 }
 
@@ -75,6 +91,12 @@ func (m *PoolMMapCache) Alloc() *MMapCache {
 // Collect 回收一个mmapcache到缓存池
 func (m *PoolMMapCache) Collect(mmcache *MMapCache) {
 	m.collector <- mmcache
+}
+
+// DumpRuntime 获取缓存池当前的数据指标
+// AllocCounter, CollectCounter, ReleaseCounter, PoolSize
+func (m *PoolMMapCache) DumpRuntime() (uint64, uint64, uint64, int) {
+	return m.allocCounter, m.collectCounter, m.releaseCounter, m.poolSize
 }
 
 func createMMapTemplate(size int) []byte {
@@ -130,7 +152,7 @@ func (m *PoolMMapCache) reloadCache() []*MMapCache {
 			}
 
 			// 没有数据，判断一下文件大小是否一样，不一样就删了
-			if int(fi.Size()) != m.dataSize {
+			if int(fi.Size()) != len(m.template) {
 				mmapCache.close(true)
 				continue
 			}
@@ -174,8 +196,12 @@ func (m *PoolMMapCache) preAllocMMapCache() *MMapCache {
 
 func (m *PoolMMapCache) mmapAllocLoop(cnt int) {
 	go func() {
-		for i := 0; i < cnt; i++ {
-			m.pool.PushBack(m.preAllocMMapCache())
+		for {
+			if m.pool.Len() < cnt {
+				m.pool.PushBack(m.preAllocMMapCache())
+			} else {
+				break
+			}
 		}
 		m.loadFlag = true
 
@@ -192,17 +218,21 @@ func (m *PoolMMapCache) mmapAllocLoop(cnt int) {
 				break
 			}
 
-			if m.pool.Len() == 0 {
+			if m.pool.Len() < cnt/2 {
 				m.pool.PushBack(m.preAllocMMapCache())
 			}
+
+			m.poolSize = m.pool.Len()
 			e := m.pool.Front()
 
 			select {
 			case b := <-m.collector:
-				if m.pool.Len() < cnt {
+				if m.pool.Len() < cnt*2 {
 					b.recycle(m.template)
 					m.pool.PushBack(b)
 					m.collectCounter++
+				} else {
+					b.close(true)
 				}
 			case m.allocator <- e.Value.(*MMapCache):
 				m.pool.Remove(e)

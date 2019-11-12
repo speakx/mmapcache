@@ -47,6 +47,10 @@ func TestPoolMMapCache(t *testing.T) {
 		},
 		func(mmapCaches []*MMapCache) {
 			for _, mmapCache := range mmapCaches {
+				// for _,mmapData := range mmapCache.GetMMapDatas() {
+				// 	val := 反序列化文件缓存数据(mmapData.GetData())
+				// 	mmapData.ReloadVal(val)
+				// }
 				t.Logf("reload mmapcache %p file:%v", mmapCache, mmapCache.path)
 				t.Logf(" -- data.len:%v key.0:%v val.0:%v",
 					len(mmapCache.GetMMapDatas()),
