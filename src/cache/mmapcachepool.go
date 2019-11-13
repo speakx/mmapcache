@@ -36,9 +36,9 @@ type PoolMMapCache struct {
 }
 
 // InitMMapCachePool 初始化mmap的cache池
-// cachesize 缓存文件的大小
-// datasize 缓存文件中，每条数据的固定大小
-// prealloccount 初始化缓存池时，会预先构建的缓存文件数量
+// mmapsize 缓存文件大小
+// datasize 缓存数据块大小
+// prealloc 初始化缓存池时，会预先构建的缓存文件数量
 // errorfunc 当出现异常，会出发此函数异步抛出error
 // reloadfunc 当本地有之前的缓存数据时，通过此函数处理已经缓存到本地的数据
 //            这批数据会初始化为MMapCache对象，但不会被添加到缓存池中（因为其中已经有数据，处于正在使用状态）
@@ -52,13 +52,13 @@ type PoolMMapCache struct {
 // }
 func InitMMapCachePool(
 	dir string,
-	cachesize int, datasize int, prealloccount int,
+	mmapsize int, datasize int, prealloc int,
 	errorfunc func(error),
 	reloadfunc func([]*MMapCache)) error {
 	os.MkdirAll(dir, os.ModePerm)
 	DefPoolMMapCache = &PoolMMapCache{
 		dir:        dir,
-		template:   createMMapTemplate(cachesize),
+		template:   createMMapTemplate(mmapsize),
 		dataSize:   datasize,
 		pool:       list.New(),
 		recycleDur: time.Second,
@@ -70,7 +70,7 @@ func InitMMapCachePool(
 
 	reload := DefPoolMMapCache.reloadCache()
 	DefPoolMMapCache.wait.Add(1)
-	DefPoolMMapCache.mmapAllocLoop(prealloccount)
+	DefPoolMMapCache.mmapAllocLoop(prealloc)
 	for {
 		if DefPoolMMapCache.loadFlag == false {
 			<-time.After(time.Millisecond * 50)

@@ -92,8 +92,8 @@ func (m *MMapCache) GetMMapDatas() []*MMapData {
 }
 
 // WriteData 写入一片内存对象
-// 返回 -1 表示当前mmap对象已无可用空间
-// 返回 error，表示当前的待写入对象，超出了mmap对象的datasize
+// 返回 (-1, nil) 表示当前mmap对象已无可用空间
+// 返回 (0, error)，表示当前的待写入对象，超出了mmap对象的datasize
 func (m *MMapCache) WriteData(tag uint16, data, key []byte, val interface{}) (int, error) {
 	// 判断是否已经有这个缓存了
 	mmapData, _ := m.mmapdataIdx[string(key)]

@@ -29,7 +29,7 @@ if [ "$target" == "all" ] || [ "$target" == "byteio" ] ;then
     go test -v -bench=".*" ./byteio/byteio_test.go ./byteio/byteio.go
     go test -bench=".*" ./byteio/byteio_test.go ./byteio/byteio.go
     go test -v -bench=".*" ./byteio/mem_test.go ./byteio/mem.go
-    go test -bench=".*" ./byteio/mem_test.go ./byteio/mem.go
+    go test -v -bench=".*" ./byteio/mem_test.go ./byteio/mem.go
 fi
 
 # mmap cache
