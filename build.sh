@@ -18,12 +18,6 @@ targetos=$1
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 
 repository=${PWD##*/}
-echo "publish environment..."
-cd ../environment
-sh ./publish.sh
-cd ../$repository
-echo
-
 # 重新造一遍 go mod
 sh ./shell/gen-proto.sh
 sh ./shell/configure.sh
@@ -68,7 +62,7 @@ echo "BuildMachine: "$BuildMachine
 # 清理上一次的产出并且编译
 rm -f ./bin/*${appName}*
 cd ./src
-CGO_ENABLED=0 GOOS=${targetos} GOARCH=amd64 go build -mod=readonly -ldflags " -X main.BuildVersion=${BuildTime}*${BuildUser}*${BuildVersion}*${BuildMachine}" -o ../bin/${appName} ./example.go
+CGO_ENABLED=1 GOOS=${targetos} GOARCH=amd64 go build -mod=readonly -ldflags " -X main.BuildVersion=${BuildTime}*${BuildUser}*${BuildVersion}*${BuildMachine}" -o ../bin/${appName} ./main.go
 
 # 如果是windows的目标os，重命名一下加exe后缀
 if [ ${targetos} = "windows" ];then
