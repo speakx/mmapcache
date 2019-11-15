@@ -37,7 +37,9 @@ function replace_go_mod() {
 		if [ "$isself" == "" ] ;then
 			echo $(pwd)"/go.mod vs $1"
 			mod=`cat go.mod | grep module | awk '{print $2}'`
-			go_mod_replace[$go_mod_counter]="replace$go_mod_replace_sp$mod$go_mod_replace_sp=>$go_mod_replace_sp$(pwd)"
+			curdir=$(pwd)
+			target_mod_dir=${curdir//$repositorydir/..\/..}
+			go_mod_replace[$go_mod_counter]="replace$go_mod_replace_sp$mod$go_mod_replace_sp=>$go_mod_replace_sp$target_mod_dir"
 			go_mod_counter=$(($go_mod_counter+1))
 		fi
 	else
@@ -63,6 +65,7 @@ cd ../
 echo
 
 cd ../
+repositorydir=$(pwd)
 replace_go_mod $moddir
 cd ./$repository
 echo "pwd : "$(pwd)
