@@ -12,13 +12,14 @@ import (
 const (
 	mmapCacheHeadSize        = 1024
 	mmapCacheHeadVersionPos  = 4
-	mmapCacheHeadDataSizePos = mmapCacheHeadVersionPos + 2
+	mmapCacheHeadStatusPos   = mmapCacheHeadVersionPos + 2
+	mmapCacheHeadDataSizePos = mmapCacheHeadStatusPos + 2
 	mmapCacheContentPos      = mmapCacheHeadSize
 )
 
 // MMapCache 基于mmap模式的文件缓存
 // | ---------------------- head -----------------------| --- content ---|
-// | 4byte:content.len | 2byte:version | 4byte:datasize |   mmapdata.go  |
+// | 4byte:content.len | 2byte:version  | 2byte:status | 4byte:datasize |   mmapdata.go  |
 type MMapCache struct {
 	path             string
 	f                *os.File
@@ -122,8 +123,19 @@ func (m *MMapCache) GetWrittenData() []byte {
 	return m.buf[:mmapCacheHeadSize+m.writePos]
 }
 
-func (m *MMapCache) getFreeContentLen() int {
+// GetFreeContentLen 返回可写入的空余内存大小
+func (m *MMapCache) GetFreeContentLen() int {
 	return len(m.writeContent) - m.writePos
+}
+
+// SetStatus 设置自定义状态
+func (m *MMapCache) SetStatus(s uint16) {
+	byteio.Uint16ToBytes(s, m.buf[mmapCacheHeadStatusPos:])
+}
+
+// GetStatus 获取自定义状态
+func (m *MMapCache) GetStatus() uint16 {
+	return byteio.BytesToUint16(m.buf[mmapCacheHeadStatusPos:])
 }
 
 func (m *MMapCache) close(remove bool) {

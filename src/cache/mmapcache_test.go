@@ -94,9 +94,9 @@ func TestMMapCacheWrite(t *testing.T) {
 	t.Logf("mmapcache.write check ok")
 
 	// write
-	oldDataLen := mmapCache.getFreeContentLen()
+	oldDataLen := mmapCache.GetFreeContentLen()
 	n, _ = mmapCache.WriteData(0xabcd, writeBuf, []byte(writeKey), nil)
-	newDataLen := mmapCache.getFreeContentLen()
+	newDataLen := mmapCache.GetFreeContentLen()
 	if n != len(writeBuf) {
 		t.Errorf("mmapcache.write err. n:%v input:%v", n, writeBuf)
 		return
