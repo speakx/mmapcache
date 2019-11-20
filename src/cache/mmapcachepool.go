@@ -238,10 +238,12 @@ func (m *PoolMMapCache) mmapAllocLoop(cnt int) {
 				m.pool.Remove(e)
 			case <-time.After(m.recycleDur):
 				if m.pool.Len() > cnt {
-					e := m.pool.Back()
-					e.Value.(*MMapCache).close(true)
-					m.pool.Remove(e)
-					m.releaseCounter++
+					for i := 0; i < 10 && m.pool.Len() > cnt; i++ {
+						e := m.pool.Back()
+						e.Value.(*MMapCache).close(true)
+						m.pool.Remove(e)
+						m.releaseCounter++
+					}
 				} else {
 					break
 				}

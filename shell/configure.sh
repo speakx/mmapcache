@@ -33,8 +33,8 @@ function init_pkg_mod() {
 function replace_go_mod() {
 	gomod=`ls | grep 'go.mod'`
 	if [ "$gomod" != "" ] ;then
-		isself=`cat go.mod | grep module | grep $repository`
-		if [ "$isself" == "" ] ;then
+		modname=`cat go.mod | grep module | awk '{print $2}'`
+		if [ "$modname" != "$repository" ] ;then
 			echo $(pwd)"/go.mod vs $1"
 			mod=`cat go.mod | grep module | awk '{print $2}'`
 			curdir=$(pwd)
