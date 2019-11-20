@@ -77,8 +77,6 @@ if [ "$pkgfolder" != "" ] ;then
 	cd ../pkg
 	init_pkg_mod
 	cd ../$repository
-else
-	cd ./src
 fi
 
 
