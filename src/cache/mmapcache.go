@@ -18,8 +18,8 @@ const (
 )
 
 // MMapCache 基于mmap模式的文件缓存
-// | ---------------------- head ---------------------------------------| --- content ---|
-// | 4byte:content.len | 2byte:version  | 2byte:status | 4byte:datasize |   mmapdata.go  |
+// | ---------------------- head ---------------------------------------| ------------ content -----------|
+// | 4byte:content.len | 2byte:version  | 2byte:status | 4byte:datasize |   mmapdata.go  |   mmapdata.go  |
 type MMapCache struct {
 	path             string
 	f                *os.File
